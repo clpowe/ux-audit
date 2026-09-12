@@ -1,0 +1,19 @@
+{
+  "name": "ux-audit",
+  "private": true,
+  "type": "module",
+  "module": "index.ts",
+  "scripts": {
+    "peek": "bun run src/peek.ts",
+    "measure": "bun run src/measure.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^7"
+  },
+  "dependencies": {
+    "axe-core": "^4.13.0"
+  }
+}
