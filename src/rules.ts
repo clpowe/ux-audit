@@ -1,4 +1,4 @@
-import type { MeasuredNode, Box } from "./geometry";
+import type { MeasuredNode, Box } from "./page/page";
 
 export type Severity = 1 | 2 | 3 | 4;
 
@@ -35,10 +35,10 @@ const TARGET_ROLES = new Set([
   "option",
 ]);
 
-// Fix 3: skip links and other deliberately-offscreen affordances are exempt.
-const offscreenByDesign = (n: MeasuredNode) =>
-  /^skip to/i.test(n.name) ||
-  (n.box !== null && (n.box.y + n.box.height <= 0 || n.box.x + n.box.width <= 0));
+// A skip link is positioned at negative coordinates until it receives focus.
+// Its box is deliberately tiny and out of frame, so size rules don't apply.
+const offscreenByDesign = (name: string, box: Box) =>
+  /^skip to/i.test(name) || box.y + box.height <= 0 || box.x + box.width <= 0;
 
 export function runRules(nodes: MeasuredNode[], ctx: PageContext): Finding[] {
   const findings: Finding[] = [];
@@ -70,35 +70,35 @@ export function runRules(nodes: MeasuredNode[], ctx: PageContext): Finding[] {
     });
   }
 
-  for (const n of nodes) {
-    if (!TARGET_ROLES.has(n.role)) continue;
+  for (const node of nodes) {
+    if (!TARGET_ROLES.has(node.role)) continue;
 
-    if (!n.box || !n.box.rendered) {
+    if (!node.box) {
       findings.push({
         rule: "phantom-node",
         law: "Visibility of system status",
         severity: 3,
-        ref: n.ref,
-        role: n.role,
-        name: n.name,
-        box: n.box,
+        ref: node.ref,
+        role: node.role,
+        name: node.name,
+        box: node.box,
         measurement: "in the accessibility tree but not rendered — announced, not visible",
       });
       continue;
     }
 
-    const { x, y, width, height } = n.box;
+    const { x, y, width, height } = node.box;
 
-    if (!offscreenByDesign(n) && (width < MIN_TARGET || height < MIN_TARGET)) {
+    if (!offscreenByDesign(node.name, node.box) && (width < MIN_TARGET || height < MIN_TARGET)) {
       const area = width * height;
       findings.push({
         rule: "tap-target",
         law: "Fitts's Law · WCAG 2.5.5 Target Size",
         severity: targetSeverity(width, height),
-        ref: n.ref,
-        role: n.role,
-        name: n.name,
-        box: n.box,
+        ref: node.ref,
+        role: node.role,
+        name: node.name,
+        box: node.box,
         measurement: `${width}×${height}px against a ${MIN_TARGET}×${MIN_TARGET} minimum`,
       });
     }
@@ -109,10 +109,10 @@ export function runRules(nodes: MeasuredNode[], ctx: PageContext): Finding[] {
         rule: "offscreen-horizontal",
         law: "Discoverability · Hick's Law",
         severity: 2,
-        ref: n.ref,
-        role: n.role,
-        name: n.name,
-        box: n.box,
+        ref: node.ref,
+        role: node.role,
+        name: node.name,
+        box: node.box,
         measurement: `starts at x=${x} on a ${ctx.viewport.width}px viewport — reachable only by swiping`,
       });
     } else if (x + width > ctx.viewport.width) {
@@ -120,23 +120,23 @@ export function runRules(nodes: MeasuredNode[], ctx: PageContext): Finding[] {
         rule: "clipped-horizontal",
         law: "Aesthetic and minimalist design",
         severity: 1,
-        ref: n.ref,
-        role: n.role,
-        name: n.name,
-        box: n.box,
+        ref: node.ref,
+        role: node.role,
+        name: node.name,
+        box: node.box,
         measurement: `extends ${x + width - ctx.viewport.width}px past the viewport edge`,
       });
     }
 
-    for (const p of nameProblems(n.name)) {
+    for (const p of nameProblems(node.name)) {
       findings.push({
         rule: "name-quality",
         law: "Match between system and the real world",
         severity: p.severity,
-        ref: n.ref,
-        role: n.role,
-        name: n.name,
-        box: n.box,
+        ref: node.ref,
+        role: node.role,
+        name: node.name,
+        box: node.box,
         measurement: p.why,
       });
     }
@@ -169,12 +169,12 @@ function nameProblems(name: string): { why: string; severity: Severity }[] {
 function labelInconsistencies(nodes: MeasuredNode[]): Finding[] {
   const groups = new Map<string, MeasuredNode[]>();
 
-  for (const n of nodes) {
-    if (!n.name || !TARGET_ROLES.has(n.role)) continue;
-    const key = n.name.toLowerCase().replace(/[^a-z0-9]/g, "");
+  for (const node of nodes) {
+    if (!node.name || !TARGET_ROLES.has(node.role)) continue;
+    const key = node.name.toLowerCase().replace(/[^a-z0-9]/g, "");
     if (!key) continue;
     if (!groups.has(key)) groups.set(key, []);
-    groups.get(key)!.push(n);
+    groups.get(key)!.push(node);
   }
 
   const out: Finding[] = [];

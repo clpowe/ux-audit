@@ -1,5 +1,5 @@
 import type { Finding, Severity } from "./rules";
-import type { Box } from "./geometry";
+import type { Box } from "./page/page";
 
 export type Observation = { rule: string; law: string; detail: string; severity: Severity };
 
@@ -82,7 +82,7 @@ export function group(findings: Finding[]): GroupedFinding[] {
       name: `${bucket.length} × ${first.role} — ${sample}${bucket.length > 3 ? ", …" : ""}`,
       count: bucket.length,
       box: first.box,
-      boxes: bucket.map((b) => b.box).filter((b): b is Box => !!b && b.rendered),
+      boxes: bucket.map((b) => b.box).filter((b): b is Box => !!b),
       observations: [
         {
           rule: first.rule,
@@ -111,7 +111,7 @@ export function group(findings: Finding[]): GroupedFinding[] {
       name: first.name,
       count: 1,
       box: first.box,
-      boxes: first.box?.rendered ? [first.box] : [],
+      boxes: first.box ? [first.box] : [],
       observations: bucket.map(obs),
     });
   }

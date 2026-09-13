@@ -1,0 +1,63 @@
+import { appendFile, mkdir } from "node:fs/promises";
+import { withSession, VIEWPORTS } from "./sessions";
+import { render } from "./render";
+import { dismissOverlays } from "./overlay";
+import { chooseAction, reflect } from "./agent";
+
+const url = process.argv[2];
+const goal = process.argv[3];
+
+if (!url || !goal) {
+  console.error('usage: bun run probe <url> "<goal>" [--mobile]');
+  process.exit(1);
+}
+const mobile = process.argv.includes("--mobile");
+
+await withSession({ url, viewport: mobile ? VIEWPORTS.mobile : VIEWPORTS.desktop }, async (page) => {
+  await dismissOverlays(page);
+  await page.prime();
+
+  const before = await page.snapshot();
+  const beforeTree = render(before);
+
+  const choice = await chooseAction(goal, beforeTree);
+  const target = before.find((n) => n.ref === choice.ref);
+  if (!target) throw new Error(`model chose ref ${choice.ref}, not present in the snapshot`);
+
+  console.log(`goal         ${goal}`);
+  console.log(`intent       ${choice.intent}`);
+  console.log(`expectation  ${choice.expectation}`);
+  console.log(`action       click ${choice.ref} — ${target.role} "${target.name}"`);
+  console.log(`why          ${choice.why_this}`);
+
+  // Includes the Page's settle time, as the user would experience it.
+  const t0 = performance.now();
+  await page.click(target);
+  const latency = Math.round(performance.now() - t0);
+
+  const after = await page.snapshot();
+  const result = await reflect(choice, beforeTree, render(after));
+
+  console.log(`\noutcome      ${result.outcome}`);
+  console.log(`gap          ${result.gap || "— none —"}`);
+  console.log(`heuristics   ${result.heuristics.join(", ") || "—"}`);
+  console.log(`latency      ${latency}ms`);
+
+  await mkdir("out", { recursive: true });
+  await appendFile(
+    "out/observations.jsonl",
+    JSON.stringify({
+      ts: new Date().toISOString(),
+      url,
+      goal,
+      intent: choice.intent,
+      expectation: choice.expectation,
+      action: { ref: choice.ref, role: target.role, name: target.name },
+      why_this: choice.why_this,
+      outcome: result.outcome,
+      gap: result.gap,
+      heuristics: result.heuristics,
+      latency_ms: latency,
+    }) + "\n",
+  );
+});
