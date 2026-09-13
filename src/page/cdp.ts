@@ -139,8 +139,6 @@ class CdpPage implements Page {
     const nodes = await this.#walkTree(opts.all ?? false);
     if (!opts.boxes) return nodes;
 
-    await this.#send("DOM.enable");
-    await this.#send("DOM.getDocument", { depth: -1, pierce: true });
     const measured: MeasuredNode[] = [];
     for (const node of nodes) measured.push({ ...node, box: await this.#boxOf(node) });
     return measured;
@@ -176,15 +174,26 @@ class CdpPage implements Page {
     const view = await this.layout();
     const x = box.x + box.width / 2 - view.scrollX;
     const y = box.y + box.height / 2 - view.scrollY;
-    await this.#send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
-    await this.#send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+    await this.#send("Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x,
+      y,
+      button: "left",
+      clickCount: 1,
+    });
+    await this.#send("Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x,
+      y,
+      button: "left",
+      clickCount: 1,
+    });
     await Bun.sleep(this.#settle.clickMs);
   }
 
   async scrollTo(y: number): Promise<void> {
     await this.#evaluate(`window.scrollTo(0, ${Number(y)})`);
     await Bun.sleep(this.#settle.scrollMs);
-    await this.#alignHighlights();
   }
 
   async prime(): Promise<void> {
@@ -204,7 +213,6 @@ class CdpPage implements Page {
       },
       60_000,
     );
-    await this.#alignHighlights();
   }
 
   async highlight(highlights: Highlight[]): Promise<void> {
@@ -241,10 +249,10 @@ class CdpPage implements Page {
       }
       document.body.appendChild(root);
     })()`);
-    await this.#alignHighlights();
   }
 
   async screenshot(): Promise<Uint8Array> {
+    await this.#alignHighlights();
     const { data } = await this.#send("Page.captureScreenshot", { format: "png" });
     return new Uint8Array(Buffer.from(data, "base64"));
   }
@@ -296,6 +304,7 @@ class CdpPage implements Page {
   async #boxOf(node: Node): Promise<Box | null> {
     const backendNodeId = handleOf(node);
     if (backendNodeId === undefined) return null;
+
     try {
       const { model } = await this.#send("DOM.getBoxModel", { backendNodeId });
       const width = Math.round(model.width);

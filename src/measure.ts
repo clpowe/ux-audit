@@ -21,6 +21,8 @@ await withSession(
     const overlays = await dismissOverlays(page);
     await page.prime();
 
+    overlays.push(...(await dismissOverlays(page, { waitForDialogMs: 0 })));
+
     const measured = await page.snapshot({ boxes: true });
     const view = await page.layout();
 
