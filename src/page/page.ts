@@ -18,8 +18,13 @@ export type Node = {
   handle: unknown;
 };
 
-/** `box` is null when the Node is in the accessibility tree but not rendered. */
-export type MeasuredNode = Node & { box: Box | null };
+export type BoxMeasurement =
+  | { measurement: "measured"; box: Box }
+  | { measurement: "not-rendered"; box: null }
+  | { measurement: "unavailable"; box: null; measurementError: string };
+
+/** A Node plus an explicit geometry outcome. Inspection failure is not evidence of invisibility. */
+export type MeasuredNode = Node & BoxMeasurement;
 
 export type Layout = {
   scrollX: number;
@@ -47,6 +52,13 @@ export interface Page {
   snapshot(opts?: SnapshotOptions): Promise<Node[]>;
 
   layout(): Promise<Layout>;
+
+  /**
+   * Whether the original Node from this Page remains connected and rendered.
+   * Hidden or removed Nodes return false; offscreen Nodes can still be present.
+   * Inspection failures throw. Snapshot refs and labels do not establish identity.
+   */
+  isPresent(node: Node): Promise<boolean>;
 
   /** Returns once the Page has settled. Throws, naming the Node, if it is not rendered or no longer on the Page. */
   click(node: Node): Promise<Timing>;

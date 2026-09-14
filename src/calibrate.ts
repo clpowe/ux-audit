@@ -10,9 +10,9 @@
  * no amount of aggregation downstream will fix that.
  */
 import { withSession, VIEWPORTS } from "./sessions";
-import { render } from "./render";
 import { dismissOverlays } from "./overlay";
-import { chooseAction, reflect } from "./agent";
+import { chooseAction, modelName, reflect } from "./agent";
+import { makeCalibrationRecord, saveCalibration } from "./calibration-record";
 
 const url = process.argv[2];
 const goal = process.argv[3];
@@ -21,7 +21,12 @@ if (!url || !goal) {
   process.exit(1);
 }
 const mobile = process.argv.includes("--mobile");
+const viewport = mobile ? VIEWPORTS.mobile : VIEWPORTS.desktop;
 const runs = Number(process.argv.find((a) => a.startsWith("--runs="))?.slice(7) ?? 10);
+if (!Number.isInteger(runs) || runs < 1) {
+  console.error("--runs must be a positive integer");
+  process.exit(1);
+}
 
 const times = <T>(n: number, fn: () => Promise<T>) => Promise.all(Array.from({ length: n }, fn));
 
@@ -35,19 +40,17 @@ function tally<T>(values: T[], key: (v: T) => string): [string, number][] {
 const pct = (n: number) => `${Math.round((n / runs) * 100)}%`;
 
 await withSession(
-  { url, viewport: mobile ? VIEWPORTS.mobile : VIEWPORTS.desktop },
+  { url, viewport },
   async (page) => {
     await dismissOverlays(page);
     await page.prime();
 
     const before = await page.snapshot();
-    const beforeTree = render(before);
-
     console.log(`goal   ${goal}`);
     console.log(`runs   ${runs}\n`);
 
     // 1. One snapshot, many choices.
-    const choices = await times(runs, () => chooseAction(goal, beforeTree));
+    const choices = await times(runs, () => chooseAction(goal, before, viewport));
 
     console.log("── which element it picks ──\n");
     for (const [ref, n] of tally(choices, (c) => String(c.ref))) {
@@ -60,10 +63,9 @@ await withSession(
     const target = before.find((n) => n.ref === choice.ref);
     if (!target) throw new Error(`model chose ref ${choice.ref}, not present in the snapshot`);
 
-    await page.click(target);
-    const afterTree = render(await page.snapshot());
-
-    const reflections = await times(runs, () => reflect(choice, beforeTree, afterTree));
+    const timing = await page.click(target);
+    const after = await page.snapshot();
+    const reflections = await times(runs, () => reflect(choice, before, after, viewport));
     const withGap = reflections.filter((r) => r.gap.trim() !== "");
 
     console.log(`\n── whether it reports a gap ──\n`);
@@ -82,5 +84,18 @@ await withSession(
       console.log(`  • ${r.gap.replace(/\s+/g, " ").slice(0, 140)}`);
       console.log(`    evidence: ${r.evidence.join(", ") || "— none cited —"}`);
     }
+
+    const file = await saveCalibration(makeCalibrationRecord({
+      url,
+      goal,
+      model: modelName(),
+      viewport,
+      before,
+      choices,
+      selectedAction: { choice, node: target, timing },
+      after,
+      reflections,
+    }));
+    console.error(`\ncalibration evidence → ${file}`);
   },
 );

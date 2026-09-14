@@ -3,7 +3,7 @@ import { dismissOverlays } from "./overlay";
 import { runRules, type Severity } from "./rules";
 import { group } from "./group";
 import { captureShots } from "./annotate";
-import { markdown } from "./report";
+import { json, markdown } from "./report";
 import { mkdir } from "node:fs/promises";
 
 const url = process.argv[2];
@@ -21,16 +21,21 @@ await withSession(
     const overlays = await dismissOverlays(page);
     await page.prime();
 
-    overlays.push(...(await dismissOverlays(page, { waitForDialogMs: 0 })));
+    // A failed or unverified attempt already ended dismissal for this audit.
+    // Only scan again for late Overlays when earlier attempts were confirmed.
+    if (!overlays.some((attempt) => attempt.status !== "dismissed")) {
+      overlays.push(...(await dismissOverlays(page, { waitForDialogMs: 0 })));
+    }
 
     const measured = await page.snapshot({ boxes: true });
     const view = await page.layout();
 
-    const findings = runRules(measured, {
+    const evaluated = runRules(measured, {
       viewport: { width: view.width, height: view.height },
       pageHeight: view.pageHeight,
-      overlaysDismissed: overlays,
+      overlayAttempts: overlays,
     });
+    const { findings, notices } = evaluated;
 
     const grouped = group(findings);
 
@@ -44,6 +49,7 @@ await withSession(
           url,
           viewport: { width: view.width, height: view.height },
           findings: grouped,
+          notices,
           shots,
         }),
       );
@@ -53,7 +59,7 @@ await withSession(
     }
 
     if (asJson) {
-      console.log(JSON.stringify({ url, viewport: view, overlays, findings: grouped }, null, 2));
+      console.log(json({ url, viewport: view, overlayAttempts: overlays, notices, findings: grouped }));
     } else {
       const labels: Record<Severity, string> = {
         4: "BLOCKER",
@@ -72,8 +78,12 @@ await withSession(
         }
       }
       console.error(
-        `${grouped.length} findings from ${findings.length} observations · ${overlays.length} overlay(s) dismissed`,
+        `${grouped.length} findings from ${findings.length} observations · ` +
+        `${overlays.filter((o) => o.status === "dismissed").length} Overlay(s) dismissed · ` +
+        `${overlays.filter((o) => o.status === "remained").length} remained · ` +
+        `${overlays.filter((o) => o.status === "unverified").length} unverified`,
       );
+      if (notices.length) console.error(`${notices.length} measurement(s) unavailable; see JSON or report for audit coverage`);
     }
   },
 );

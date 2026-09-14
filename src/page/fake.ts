@@ -22,6 +22,8 @@ export type FakeNode = {
   focused?: boolean;
   depth?: number;
   box?: Box | null;
+  /** Simulates a geometry inspection failure rather than an unrendered Node. */
+  measurementError?: string;
 };
 
 export type FakeState = {
@@ -49,6 +51,9 @@ export class FakePage implements Page {
   // Typed text is held here rather than written back into the fixtures: states share
   // Node objects (`...content`), so mutating one would leak into the others.
   readonly #typed = new Map<string, string>();
+  // Reuse a fixture object across states to represent the same surviving Node.
+  // A new object with the same label represents a replacement, not that Node.
+  readonly #fixtures = new WeakMap<object, FakeNode>();
 
   constructor(opts: FakePageOptions) {
     if (!opts.states[opts.initial]) throw new Error(`unknown initial state "${opts.initial}"`);
@@ -88,7 +93,20 @@ export class FakePage implements Page {
         depth: fixture.depth ?? 0,
         handle: { key, occurrence } satisfies FakeHandle,
       };
-      return opts.boxes ? { ...node, box: boxOf(fixture, i) } : node;
+      this.#fixtures.set(node.handle as FakeHandle, fixture);
+      if (!opts.boxes) return node;
+      if (fixture.measurementError) {
+        return {
+          ...node,
+          measurement: "unavailable" as const,
+          box: null,
+          measurementError: fixture.measurementError,
+        };
+      }
+      const box = boxOf(fixture, i);
+      return box
+        ? { ...node, measurement: "measured" as const, box }
+        : { ...node, measurement: "not-rendered" as const, box: null };
     });
   }
 
@@ -100,6 +118,17 @@ export class FakePage implements Page {
       height: this.#viewport.height,
       pageHeight: this.#pageHeight(),
     };
+  }
+
+  async isPresent(node: Node): Promise<boolean> {
+    const fixture = typeof node.handle === "object" && node.handle !== null
+      ? this.#fixtures.get(node.handle)
+      : undefined;
+    if (!fixture) throw new Error(`cannot inspect ${node.role} "${node.name}" — unknown Node`);
+    const i = this.#current().nodes.indexOf(fixture);
+    if (i === -1) return false;
+    const box = boxOf(fixture, i);
+    return box !== null && box.width > 0 && box.height > 0;
   }
 
   async click(node: Node): Promise<Timing> {

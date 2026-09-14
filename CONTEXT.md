@@ -23,3 +23,7 @@ _Avoid_: popup, modal, banner
 **Highlight**:
 An outline drawn onto a Page marking where a Finding sits, captured in report screenshots.
 _Avoid_: overlay, annotation, mark
+
+**Audit notice**:
+A limitation in the audit's evidence or coverage, reported separately from Findings and severity counts. An unavailable measurement is an Audit notice, not proof of a usability defect.
+_Avoid_: Finding, defect, warning

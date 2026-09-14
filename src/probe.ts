@@ -1,8 +1,7 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import { withSession, VIEWPORTS } from "./sessions";
-import { render } from "./render";
 import { dismissOverlays } from "./overlay";
-import { chooseAction, reflect } from "./agent";
+import { chooseAction, citedEvidence, reflect } from "./agent";
 
 const url = process.argv[2];
 const goal = process.argv[3];
@@ -12,17 +11,17 @@ if (!url || !goal) {
   process.exit(1);
 }
 const mobile = process.argv.includes("--mobile");
+const viewport = mobile ? VIEWPORTS.mobile : VIEWPORTS.desktop;
 
 await withSession(
-  { url, viewport: mobile ? VIEWPORTS.mobile : VIEWPORTS.desktop },
+  { url, viewport },
   async (page) => {
     await dismissOverlays(page);
     await page.prime();
 
     const before = await page.snapshot();
-    const beforeTree = render(before);
 
-    const choice = await chooseAction(goal, beforeTree);
+    const choice = await chooseAction(goal, before, viewport);
     const target = before.find((n) => n.ref === choice.ref);
     if (!target) throw new Error(`model chose ref ${choice.ref}, not present in the snapshot`);
 
@@ -34,7 +33,7 @@ await withSession(
 
     const timing = await page.click(target);
     const after = await page.snapshot();
-    const result = await reflect(choice, beforeTree, render(after));
+    const result = await reflect(choice, before, after, viewport);
 
     const responded =
       timing.respondedMs === null
@@ -69,7 +68,8 @@ await withSession(
         heuristics: result.heuristics,
         responded_ms: timing.respondedMs,
         settled_ms: timing.settledMs,
-        evidence: result.evidence,
+        evidence_refs: result.evidence,
+        evidence: citedEvidence(result, after),
       }) + "\n",
     );
   },

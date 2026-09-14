@@ -12,11 +12,17 @@ const DISMISS = [
   /^no thanks/i,
 ];
 
-export type Overlay = {
+/** One dismissal attempt, with evidence and an explicitly verified outcome. */
+export type DismissalResult = {
   name: string;
-  dismissedWith: string;
+  attemptedWith: string;
+  /** Evidence captured before the dismissal attempt. */
   shot: Uint8Array;
-};
+} & (
+  | { status: "dismissed" }
+  | { status: "remained" }
+  | { status: "unverified"; reason: string }
+);
 
 export type DismissOptions = {
   maxRounds?: number;
@@ -45,16 +51,36 @@ function overlayRoots(nodes: MeasuredNode[]): MeasuredNode[] {
   });
 }
 
-/** The rendered controls belonging to `root`, up to wherever the next overlay begins. */
+/** Rendered descendant controls, stopping before a nested candidate Overlay. */
 function controlsWithin(nodes: MeasuredNode[], root: MeasuredNode, roots: MeasuredNode[]) {
   const next = roots.find((r) => r.ref > root.ref);
-  const end = next ? next.ref : Infinity;
+  const outside = nodes.find((n) => n.ref > root.ref && n.depth <= root.depth);
+  const end = Math.min(next?.ref ?? Infinity, outside?.ref ?? Infinity);
   return nodes.filter(
     (n) => (n.role === "button" || n.role === "link") && n.ref > root.ref && n.ref < end && n.box,
   );
 }
 
-export async function dismissOverlays(page: Page, opts: DismissOptions = {}): Promise<Overlay[]> {
+async function verifyDismissal(
+  page: Page,
+  originalOverlay: Node,
+  attempt: Pick<DismissalResult, "name" | "attemptedWith" | "shot">,
+): Promise<DismissalResult> {
+  try {
+    const present = await page.isPresent(originalOverlay);
+    return { ...attempt, status: present ? "remained" : "dismissed" };
+  } catch (error) {
+    let reason = "Inspection failed with an unreadable error";
+    try {
+      reason = error instanceof Error ? error.message : String(error);
+    } catch {
+      // Even a thrown value with no string representation must not abort the audit.
+    }
+    return { ...attempt, status: "unverified", reason };
+  }
+}
+
+export async function dismissOverlays(page: Page, opts: DismissOptions = {}): Promise<DismissalResult[]> {
   const { maxRounds = 3, waitForDialogMs = 4000 } = opts;
 
   const deadline = Date.now() + waitForDialogMs;
@@ -62,7 +88,7 @@ export async function dismissOverlays(page: Page, opts: DismissOptions = {}): Pr
     await Bun.sleep(400);
   }
 
-  const dismissed: Overlay[] = [];
+  const attempts: DismissalResult[] = [];
   for (let round = 0; round < maxRounds; round++) {
     const nodes = await page.snapshot({ boxes: true });
     const roots = overlayRoots(nodes);
@@ -85,13 +111,29 @@ export async function dismissOverlays(page: Page, opts: DismissOptions = {}): Pr
     if (!overlay || !target) break;
 
     const shot = await page.screenshot();
-    await page.click(target);
-    dismissed.push({
+    const attempt = {
       name: overlay.name || "⟨unnamed overlay⟩",
-      dismissedWith: target.name,
+      attemptedWith: target.name,
       shot,
-    });
+    };
+    try {
+      await page.click(target);
+    } catch (error) {
+      let reason = "Click failed with an unreadable error";
+      try {
+        reason = `Click failed: ${error instanceof Error ? error.message : String(error)}`;
+      } catch {
+        // Preserve the evidence even when the thrown value cannot be formatted.
+      }
+      attempts.push({ ...attempt, status: "unverified", reason });
+      break;
+    }
+    const result = await verifyDismissal(page, overlay, attempt);
+    attempts.push(result);
+    // Stop dismissal attempts, not the audit. Repeated clicks on a control whose
+    // outcome is unsuccessful or unknown can cause unintended actions.
+    if (result.status !== "dismissed") break;
   }
 
-  return dismissed;
+  return attempts;
 }

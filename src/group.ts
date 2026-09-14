@@ -47,8 +47,8 @@ export function group(findings: Finding[]): GroupedFinding[] {
     }
   }
 
-  // Repeated components: same rule, role, height and severity.
-  // Height rather than full box, so a row of text links groups even at different widths.
+  // Similar elements: same rule, role, height and severity. Parent identity is not
+  // available, so this grouping makes no claim that the elements are siblings.
   const buckets = new Map<string, Finding[]>();
   for (const f of rest) {
     const band = f.box ? Math.round(f.box.height / 4) * 4 : "none";
@@ -74,8 +74,8 @@ export function group(findings: Finding[]): GroupedFinding[] {
     const details = new Set(bucket.map((b) => b.measurement));
     const detail =
       details.size === 1
-        ? `${bucket.length} sibling elements, each: ${first.measurement}`
-        : `${bucket.length} sibling elements, e.g. ${first.measurement}`;
+        ? `${bucket.length} similar elements, each: ${first.measurement}`
+        : `${bucket.length} similar elements, e.g. ${first.measurement}`;
 
     out.push({
       id: "",
@@ -84,7 +84,7 @@ export function group(findings: Finding[]): GroupedFinding[] {
       role: first.role,
       name: `${bucket.length} × ${first.role} — ${sample}${bucket.length > 3 ? ", …" : ""}`,
       count: bucket.length,
-      box: first.box,
+      box: first.box ?? null,
       boxes: bucket.map((b) => b.box).filter((b): b is Box => !!b),
       observations: [
         {
@@ -106,6 +106,7 @@ export function group(findings: Finding[]): GroupedFinding[] {
 
   for (const bucket of byRef.values()) {
     const first = bucket[0];
+    if (!first) continue;
     out.push({
       id: "",
       severity: Math.max(...bucket.map((b) => b.severity)) as Severity,
@@ -113,7 +114,7 @@ export function group(findings: Finding[]): GroupedFinding[] {
       role: first.role,
       name: first.name,
       count: 1,
-      box: first.box,
+      box: first.box ?? null,
       boxes: first.box ? [first.box] : [],
       observations: bucket.map(obs),
     });

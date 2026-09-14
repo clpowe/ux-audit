@@ -1,4 +1,5 @@
 import type { MeasuredNode, Box } from "./page/page";
+import type { DismissalResult } from "./overlay";
 
 export type Severity = 1 | 2 | 3 | 4;
 
@@ -18,10 +19,20 @@ export type Finding = {
   shot?: Uint8Array;
 };
 
+export type AuditNotice = {
+  kind: "measurement-unavailable";
+  ref: number;
+  role: string;
+  name: string;
+  detail: string;
+};
+
+export type RuleResult = { findings: Finding[]; notices: AuditNotice[] };
+
 export type PageContext = {
   viewport: { width: number; height: number };
   pageHeight: number;
-  overlaysDismissed: { name: string; dismissedWith: string; shot?: Uint8Array }[];
+  overlayAttempts: DismissalResult[];
 };
 
 const MIN_TARGET = 44;
@@ -50,8 +61,9 @@ const offscreenByDesign = (name: string, box: Box) =>
 const unpresented = (box: Box) =>
   Math.min(box.width, box.height) < 4 || box.width * box.height < 64;
 
-export function runRules(nodes: MeasuredNode[], ctx: PageContext): Finding[] {
+export function runRules(nodes: MeasuredNode[], ctx: PageContext): RuleResult {
   const findings: Finding[] = [];
+  const notices: AuditNotice[] = [];
 
   const screens = ctx.pageHeight / ctx.viewport.height;
   if (screens > 8) {
@@ -67,9 +79,9 @@ export function runRules(nodes: MeasuredNode[], ctx: PageContext): Finding[] {
     });
   }
 
-  for (const o of ctx.overlaysDismissed) {
+  for (const o of ctx.overlayAttempts) {
     findings.push({
-      rule: "blocking-overlay",
+      rule: o.status === "dismissed" ? "blocking-overlay" : `overlay-${o.status}`,
       law: "User control and freedom",
       severity: 2,
       ref: null,
@@ -77,16 +89,31 @@ export function runRules(nodes: MeasuredNode[], ctx: PageContext): Finding[] {
       name: o.name,
       box: null,
       shot: o.shot,
-      measurement: `blocked the first view; dismissed via "${o.dismissedWith}"`,
+      measurement: o.status === "dismissed"
+        ? `dismissal confirmed after clicking "${o.attemptedWith}"`
+        : o.status === "remained"
+          ? `Overlay remained rendered after clicking "${o.attemptedWith}"; audit continued with a potentially obstructed Page`
+          : `dismissal unverified after attempting "${o.attemptedWith}": ${o.reason}; audit continued; the Overlay may still obstruct the Page`,
     });
   }
 
   for (const node of nodes) {
     if (!TARGET_ROLES.has(node.role)) continue;
 
-    // Both branches mean the same thing to a user: the control is announced and
-    // cannot be seen. Neither has geometry worth photographing, so neither carries a box.
-    if (!node.box || unpresented(node.box)) {
+    if (node.measurement === "unavailable") {
+      notices.push({
+        kind: "measurement-unavailable",
+        ref: node.ref,
+        role: node.role,
+        name: node.name,
+        detail: node.measurementError,
+      });
+      continue;
+    }
+
+    // Both branches are observed presentation defects. Inspection failures were
+    // separated above and must never become UX Findings.
+    if (node.measurement === "not-rendered" || unpresented(node.box)) {
       findings.push({
         rule: "phantom-node",
         law: "Visibility of system status",
@@ -95,7 +122,7 @@ export function runRules(nodes: MeasuredNode[], ctx: PageContext): Finding[] {
         role: node.role,
         name: node.name,
         box: null,
-        measurement: node.box
+        measurement: node.measurement === "measured"
           ? `${node.box.width}×${node.box.height}px — clipped out of the presentation, announced but not visible`
           : "in the accessibility tree but not rendered — announced, not visible",
       });
@@ -157,7 +184,7 @@ export function runRules(nodes: MeasuredNode[], ctx: PageContext): Finding[] {
   }
 
   findings.push(...labelInconsistencies(nodes));
-  return findings.sort((a, b) => b.severity - a.severity);
+  return { findings: findings.sort((a, b) => b.severity - a.severity), notices };
 }
 
 function nameProblems(name: string): { why: string; severity: Severity }[] {
@@ -194,6 +221,8 @@ function labelInconsistencies(nodes: MeasuredNode[]): Finding[] {
   const out: Finding[] = [];
   const FORM_PAIR = new Set(["combobox", "textbox", "searchbox", "button"]);
   for (const group of groups.values()) {
+    const first = group[0];
+    if (!first) continue;
     const names = new Set(group.map((n) => n.name));
     const roles = new Set(group.map((n) => n.role));
     if (names.size < 2 && roles.size < 2) continue;
@@ -204,10 +233,10 @@ function labelInconsistencies(nodes: MeasuredNode[]): Finding[] {
       rule: "label-inconsistency",
       law: "Consistency and standards · Jakob's Law",
       severity: 2,
-      ref: group[0].ref,
+      ref: first.ref,
       role: [...roles].join(" / "),
       name: [...names].join("  ·  "),
-      box: group[0].box,
+      box: first.box,
       measurement: `one target, ${names.size} label(s) across ${roles.size} role(s)`,
     });
   }

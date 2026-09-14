@@ -29,8 +29,8 @@ export async function captureShots(
 ): Promise<Map<string, string>> {
   const shots = new Map<string, string>();
 
-  // An overlay was photographed before it was dismissed. Nothing on the page shows
-  // it now, so these bytes are the only record of it and cannot be re-taken here.
+  // Preserve each Overlay's evidence from before its dismissal attempt, whether
+  // the attempt succeeded or not. A later screenshot would describe a new state.
   let captured = 0;
   for (const f of findings) {
     if (!f.shot) continue;
@@ -41,7 +41,6 @@ export async function captureShots(
 
   await page.highlight(highlightsFor(findings));
 
-  const view = await page.layout();
   const done = new Set<string>();
 
   const ordered = findings.filter((f) => f.box !== null).sort((a, b) => a.box!.y - b.box!.y);
@@ -53,19 +52,25 @@ export async function captureShots(
     const top = Math.max(0, anchor.box!.y - 120);
     await page.scrollTo(top);
 
+    // The Page may clamp the requested position near its end. Associate evidence
+    // only after reading the actual viewport that the screenshot will capture.
+    const view = await page.layout();
+    const visible = ordered.filter((f) => {
+      if (done.has(f.id) || !f.box) return false;
+      const horizontallyVisible =
+        f.box.x < view.scrollX + view.width && f.box.x + f.box.width > view.scrollX;
+      const verticallyVisible =
+        f.box.y < view.scrollY + view.height && f.box.y + f.box.height > view.scrollY;
+      return horizontallyVisible && verticallyVisible;
+    });
+    if (!visible.length) continue;
+
     const file = `shot-${String(++n).padStart(2, "0")}.png`;
     await Bun.write(`${dir}/${file}`, await page.screenshot());
 
-    for (const f of ordered) {
-      if (done.has(f.id) || !f.box) continue;
-      if (f.box.y >= top && f.box.y + f.box.height <= top + view.height) {
-        shots.set(f.id, file);
-        done.add(f.id);
-      }
-    }
-    if (!done.has(anchor.id)) {
-      shots.set(anchor.id, file);
-      done.add(anchor.id);
+    for (const f of visible) {
+      shots.set(f.id, file);
+      done.add(f.id);
     }
   }
 

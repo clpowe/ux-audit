@@ -1,4 +1,4 @@
-import { launchPage, type Viewport } from "./page/cdp";
+import { launchPage, type Viewport } from "./page/playwright";
 import type { Page } from "./page/page";
 
 export const VIEWPORTS = {
