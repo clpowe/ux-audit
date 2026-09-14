@@ -2,7 +2,7 @@ import type { Node, Page } from "./page/page";
 import { evaluationMarkdown, findingReviewMarkdown, findingReviewSchema, validateEvaluation, type StepEvaluation, type FindingReview } from "./journey-evaluation";
 
 export const PERSONAS: Record<string, string> = {
-  "New Mother": "Shopping with limited time. Needs an easy-to-clean sofa with a listed item price of no more than $1,500 and delivery available by October 15, 2026. Taxes, delivery fees, disability, and technical ability are unknown; do not infer them.",
+  "New Mother": "A 34-year-old married mother based in Atlanta, shopping with limited time. Prefers a warm, contemporary, family-friendly style with soft shapes and an uncluttered look; no specific color is required. Needs an easy-to-clean sofa with a listed item price of no more than $1,500 and delivery available by October 15, 2026. Her exact delivery address and ZIP, taxes, delivery fees, disability, and technical ability are unknown; do not infer them or infer needs and abilities from her demographics.",
   "Careful Shopper": "Compares product details, total price, delivery, and returns before choosing. Do not invent a budget or product requirements.",
 };
 
@@ -69,8 +69,23 @@ function clickTarget(node: Node, nodes: Node[]): Node {
 
 function targetFor(decision: Decision, nodes: Node[]): Node {
   const node = nodes.find((candidate) => candidate.ref === decision.ref);
-  if (!node || node.disabled || !node.name.trim()) throw new Error("Action target is missing, disabled, or unnamed.");
-  return node;
+  if (!node) throw new Error(`Action target ${decision.ref} is missing.`);
+  if (node.disabled) throw new Error(`Action target ${decision.ref} is disabled.`);
+  if (node.name.trim()) return node;
+
+  // Some storefronts expose a product anchor without its descendant heading as
+  // the anchor's accessible name. Keep the anchor's locator, but use that
+  // descendant text for policy checks and reporting.
+  let label = "";
+  for (const candidate of nodes.slice(nodes.indexOf(node) + 1)) {
+    if (candidate.depth <= node.depth) break;
+    if (candidate.name.trim()) {
+      label = candidate.name.trim();
+      break;
+    }
+  }
+  if (!label) throw new Error(`Action target ${decision.ref} is unnamed.`);
+  return { ...node, name: label };
 }
 
 function validate(decision: Decision, nodes: Node[], warnings: string[]): Decision {
@@ -175,6 +190,8 @@ export async function runJourney(
         await page.scrollTo(Math.max(0, Math.min(view.pageHeight - view.height, view.scrollY + (decision.direction === "down" ? 1 : -1) * view.height * 0.8)));
       } else {
         const selected = targetFor(decision, nodes);
+        const reportedTarget = step.nodes.find((node) => node.ref === selected.ref);
+        if (reportedTarget) reportedTarget.name = selected.name;
         if (FORBIDDEN.test(selected.name)) return finish("blocked", `Stopped before restricted control: ${selected.name}`);
         const target = decision.action === "click" ? clickTarget(selected, nodes) : selected;
         if (FORBIDDEN.test(target.name)) return finish("blocked", `Stopped before restricted control: ${target.name}`);

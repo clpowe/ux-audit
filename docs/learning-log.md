@@ -114,6 +114,21 @@
 - next review date: 2026-09-28.
 
 
+### 2026-09-14 — Unnamed Playwright product links
+- baseline / scope: Playwright migration plus the user's Ashley run ending at an unnamed product-link target.
+- mode: Full with the standing "just write it" override; implementation remained assistant-owned.
+- observation: Playwright returned the product anchor as an unnamed link and its product heading as a named descendant. The model selected the correct anchor ref, but journey validation rejected it before Playwright acted.
+- implementation: action target resolution now retains the anchor locator and borrows the first named descendant for policy checks and reporting. Missing, disabled, and unnamed failures are reported distinctly.
+- checks: `bun test` passed 117 tests across 11 files, including the Playwright browser contract and complete search-to-cart fixture; `bunx tsc --noEmit` and `git diff --check` passed.
+- assistance needed: fully assistant-implemented at the user's request.
+
+### 2026-09-14 — New Mother profile and style
+- baseline / scope: existing New Mother shopping constraints plus the user's requested demographic and style details.
+- mode: Quick; this is a localized persona-data and documentation change under the standing "just write it" override.
+- implementation: the persona is 34, married, and based in Atlanta, with a warm contemporary family-friendly preference, soft shapes, an uncluttered look, and no required color. Exact address and ZIP remain unknown, and demographics cannot be used to infer needs or abilities.
+- actual files: `src/journey.ts`, `src/persona.test.ts`, `README.md`, and this log.
+- assistance needed: fully assistant-implemented at the user's request.
+
 <!--
 ### <date> — <task>
 - baseline / scope:

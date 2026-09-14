@@ -57,6 +57,17 @@ test("text labels resolve to their containing button and record the actual targe
   expect(journeyMarkdown(result)).toContain("Target: button — Close Modal");
 });
 
+test("an unnamed product link uses its descendant heading as its label", async () => {
+  const page = new FakePage({ initial: "results", states: {
+    results: { nodes: [{ role: "link", name: "", depth: 1 }, { role: "heading", name: "Easy-clean sofa", depth: 2 }] },
+    product: { nodes: [{ role: "heading", name: "Easy-clean sofa" }] },
+  }, transitions: { results: { "link:": "product" } } });
+  const result = await runJourney(page, input, async ({ steps }) => decision(steps.length ? { action: "blocked" } : { action: "click", ref: 0 }), save);
+  expect(page.state).toBe("product");
+  expect(result.steps[0]?.executedRef).toBe(0);
+  expect(journeyMarkdown(result)).toContain("Target: link — Easy-clean sofa");
+});
+
 for (const parent of [{ name: "Checkout" }, { name: "Close Modal", disabled: true }]) {
   test(`text labels cannot bypass containing-control policy: ${JSON.stringify(parent)}`, async () => {
     const page = simplePage([{ role: "button", depth: 1, ...parent }, { role: "StaticText", name: "No thank you", depth: 2 }]);
