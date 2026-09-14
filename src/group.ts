@@ -13,6 +13,8 @@ export type GroupedFinding = {
   box: Box | null;
   boxes: Box[];
   observations: Observation[];
+  /** Set only when the finding was photographed as it happened. See Finding.shot. */
+  shot?: Uint8Array;
 };
 
 const obs = (f: Finding): Observation => ({
@@ -38,6 +40,7 @@ export function group(findings: Finding[]): GroupedFinding[] {
         box: null,
         boxes: [],
         observations: [obs(f)],
+        shot: f.shot,
       });
     } else {
       rest.push(f);

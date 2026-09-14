@@ -11,12 +11,17 @@ export type Finding = {
   name: string;
   measurement: string;
   box: Box | null | undefined;
+  /**
+   * Evidence captured at the moment the finding occurred. Only for findings that
+   * cannot be photographed afterwards, because acting on them destroyed the view.
+   */
+  shot?: Uint8Array;
 };
 
 export type PageContext = {
   viewport: { width: number; height: number };
   pageHeight: number;
-  overlaysDismissed: { name: string; dismissedWith: string }[];
+  overlaysDismissed: { name: string; dismissedWith: string; shot?: Uint8Array }[];
 };
 
 const MIN_TARGET = 44;
@@ -39,6 +44,11 @@ const TARGET_ROLES = new Set([
 // Its box is deliberately tiny and out of frame, so size rules don't apply.
 const offscreenByDesign = (name: string, box: Box) =>
   /^skip to/i.test(name) || box.y + box.height <= 0 || box.x + box.width <= 0;
+
+// A control clipped down to a few pixels is not a small target — it is a control
+// nobody is shown. Ashley's "Promo 1" is a 2×12 button inside a 1×1 parent.
+const unpresented = (box: Box) =>
+  Math.min(box.width, box.height) < 4 || box.width * box.height < 64;
 
 export function runRules(nodes: MeasuredNode[], ctx: PageContext): Finding[] {
   const findings: Finding[] = [];
@@ -66,6 +76,7 @@ export function runRules(nodes: MeasuredNode[], ctx: PageContext): Finding[] {
       role: "dialog",
       name: o.name,
       box: null,
+      shot: o.shot,
       measurement: `blocked the first view; dismissed via "${o.dismissedWith}"`,
     });
   }
@@ -73,7 +84,9 @@ export function runRules(nodes: MeasuredNode[], ctx: PageContext): Finding[] {
   for (const node of nodes) {
     if (!TARGET_ROLES.has(node.role)) continue;
 
-    if (!node.box) {
+    // Both branches mean the same thing to a user: the control is announced and
+    // cannot be seen. Neither has geometry worth photographing, so neither carries a box.
+    if (!node.box || unpresented(node.box)) {
       findings.push({
         rule: "phantom-node",
         law: "Visibility of system status",
@@ -81,8 +94,10 @@ export function runRules(nodes: MeasuredNode[], ctx: PageContext): Finding[] {
         ref: node.ref,
         role: node.role,
         name: node.name,
-        box: node.box,
-        measurement: "in the accessibility tree but not rendered — announced, not visible",
+        box: null,
+        measurement: node.box
+          ? `${node.box.width}×${node.box.height}px — clipped out of the presentation, announced but not visible`
+          : "in the accessibility tree but not rendered — announced, not visible",
       });
       continue;
     }
@@ -90,7 +105,6 @@ export function runRules(nodes: MeasuredNode[], ctx: PageContext): Finding[] {
     const { x, y, width, height } = node.box;
 
     if (!offscreenByDesign(node.name, node.box) && (width < MIN_TARGET || height < MIN_TARGET)) {
-      const area = width * height;
       findings.push({
         rule: "tap-target",
         law: "Fitts's Law · WCAG 2.5.5 Target Size",
@@ -200,11 +214,13 @@ function labelInconsistencies(nodes: MeasuredNode[]): Finding[] {
   return out;
 }
 
+/**
+ * No measured rule returns 4. A blocker means the task could not be completed, and
+ * geometry alone cannot observe that — only a mission that failed can.
+ */
 function targetSeverity(w: number, h: number): Severity {
   const min = Math.min(w, h);
-  const area = w * h;
-  if (min < 16) return 4; // cannot be hit reliably at all
-  if (min < 28 && area < 1500) return 3; // small in both directions
-  if (min < 40) return 2; // short but wide — imprecise, hittable
+  if (min < 16) return 3; // hittable only with precise aim
+  if (min < 40) return 2; // imprecise, but reliably hittable
   return 1; // 40–43px, a near miss
 }

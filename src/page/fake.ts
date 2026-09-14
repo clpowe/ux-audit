@@ -6,6 +6,7 @@ import type {
   Node,
   Page,
   SnapshotOptions,
+  Timing,
 } from "./page";
 
 /**
@@ -45,6 +46,9 @@ export class FakePage implements Page {
   #state: string;
   #scrollY = 0;
   #highlights: Highlight[] = [];
+  // Typed text is held here rather than written back into the fixtures: states share
+  // Node objects (`...content`), so mutating one would leak into the others.
+  readonly #typed = new Map<string, string>();
 
   constructor(opts: FakePageOptions) {
     if (!opts.states[opts.initial]) throw new Error(`unknown initial state "${opts.initial}"`);
@@ -78,7 +82,7 @@ export class FakePage implements Page {
         ref: i,
         role: fixture.role,
         name: fixture.name,
-        value: fixture.value,
+        value: this.#typed.get(storeKey(key, occurrence)) ?? fixture.value,
         disabled: fixture.disabled,
         focused: fixture.focused,
         depth: fixture.depth ?? 0,
@@ -98,25 +102,43 @@ export class FakePage implements Page {
     };
   }
 
-  async click(node: Node): Promise<void> {
+  async click(node: Node): Promise<Timing> {
+    const target = this.#resolve(node, "click");
+
+    const next = this.#transitions[this.#state]?.[keyOf(target.fixture)];
+    if (next === undefined) return NO_RESPONSE;
+
+    if (!this.#states[next]) throw new Error(`transition to unknown state "${next}"`);
+    this.#state = next;
+    this.#scrollY = Math.min(this.#scrollY, this.#maxScroll());
+    return { respondedMs: 0, settledMs: 0, respondedWith: "mutation" };
+  }
+
+  /**
+   * Typing changes what the control holds and nothing else. A page that answers
+   * keystrokes — typeahead, inline validation — is a page this fixture format cannot
+   * describe, so the fake reports no response rather than inventing one.
+   */
+  async type(node: Node, text: string): Promise<Timing> {
+    const target = this.#resolve(node, "type");
+    this.#typed.set(storeKey(keyOf(target.fixture), occurrenceOf(node)), text);
+    return NO_RESPONSE;
+  }
+
+  /** The fixture a Node refers to, or a throw naming it. */
+  #resolve(node: Node, verb: string): { fixture: FakeNode; i: number } {
     const handle = node.handle as Partial<FakeHandle> | undefined;
-    const matches = this.#current().nodes
-      .map((fixture, i) => ({ fixture, i }))
+    const matches = this.#current()
+      .nodes.map((fixture, i) => ({ fixture, i }))
       .filter(({ fixture }) => keyOf(fixture) === handle?.key);
     const target = matches[handle?.occurrence ?? -1];
 
     if (!target || boxOf(target.fixture, target.i) === null) {
       throw new Error(
-        `cannot click ${node.role} "${node.name}" — not rendered or no longer on the page`,
+        `cannot ${verb} ${node.role} "${node.name}" — not rendered or no longer on the page`,
       );
     }
-
-    const next = this.#transitions[this.#state]?.[target.fixture.role + ":" + target.fixture.name];
-    if (next !== undefined) {
-      if (!this.#states[next]) throw new Error(`transition to unknown state "${next}"`);
-      this.#state = next;
-      this.#scrollY = Math.min(this.#scrollY, this.#maxScroll());
-    }
+    return target;
   }
 
   async scrollTo(y: number): Promise<void> {
@@ -154,7 +176,11 @@ export class FakePage implements Page {
   }
 }
 
+const NO_RESPONSE: Timing = { respondedMs: null, settledMs: null, respondedWith: null };
+
 const keyOf = (n: FakeNode) => `${n.role}:${n.name}`;
+const storeKey = (key: string, occurrence: number) => `${key}#${occurrence}`;
+const occurrenceOf = (node: Node) => (node.handle as Partial<FakeHandle> | undefined)?.occurrence ?? 0;
 
 const boxOf = (n: FakeNode, i: number): Box | null =>
   n.box === undefined ? { x: 0, y: i * 50, width: 100, height: 44 } : n.box;

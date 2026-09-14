@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { dismissOverlays } from "./overlay";
+import { dismissOverlays, type Overlay } from "./overlay";
 import { FakePage, type FakeNode } from "./page/fake";
 
 const content: FakeNode[] = [
@@ -8,6 +8,11 @@ const content: FakeNode[] = [
 ];
 
 const noWait = { waitForDialogMs: 0 };
+
+// Overlays also carry the screenshot taken before dismissal; these assertions are
+// about which overlay was found and how, so the bytes are checked separately.
+const how = (overlays: Overlay[]) =>
+  overlays.map(({ name, dismissedWith }) => ({ name, dismissedWith }));
 
 describe("dismissOverlays", () => {
   test("dismisses a cookie banner and reports how", async () => {
@@ -27,9 +32,9 @@ describe("dismissOverlays", () => {
       transitions: { banner: { "button:Accept all": "clear" } },
     });
 
-    expect(await dismissOverlays(page, noWait)).toEqual([
-      { name: "We use cookies", dismissedWith: "Accept all" },
-    ]);
+    const dismissed = await dismissOverlays(page, noWait);
+    expect(how(dismissed)).toEqual([{ name: "We use cookies", dismissedWith: "Accept all" }]);
+    expect(dismissed[0].shot).toBeInstanceOf(Uint8Array);
     expect(page.state).toBe("clear");
   });
 
@@ -62,7 +67,7 @@ describe("dismissOverlays", () => {
       },
     });
 
-    expect(await dismissOverlays(page, noWait)).toEqual([
+    expect(how(await dismissOverlays(page, noWait))).toEqual([
       { name: "Consent", dismissedWith: "Agree" },
       { name: "Newsletter", dismissedWith: "No thanks" },
     ]);
@@ -121,8 +126,57 @@ describe("dismissOverlays", () => {
       transitions: { banner: { "button:Got it": "clear" } },
     });
 
-    expect(await dismissOverlays(page, noWait)).toEqual([
+    expect(how(await dismissOverlays(page, noWait))).toEqual([
       { name: "Cookies", dismissedWith: "Got it" },
+    ]);
+  });
+
+  // A third-party lightbox is an iframe: a second document drawn over the page.
+  // It carries no dialog role, so role alone never finds it.
+  test("dismisses a lightbox that lives in an embedded document", async () => {
+    const page = new FakePage({
+      initial: "lightbox",
+      states: {
+        lightbox: {
+          nodes: [
+            { role: "RootWebArea", name: "Ashley" },
+            ...content,
+            { role: "RootWebArea", name: "" },
+            { role: "StaticText", name: "Please verify your delivery zip code.", depth: 1 },
+            { role: "button", name: "Close Modal", depth: 1 },
+          ],
+        },
+        clear: { nodes: [{ role: "RootWebArea", name: "Ashley" }, ...content] },
+      },
+      transitions: { lightbox: { "button:Close Modal": "clear" } },
+    });
+
+    expect(how(await dismissOverlays(page, noWait))).toEqual([
+      { name: "⟨unnamed overlay⟩", dismissedWith: "Close Modal" },
+    ]);
+    expect(page.state).toBe("clear");
+  });
+
+  test("looks past an embedded document that holds nothing dismissable", async () => {
+    const page = new FakePage({
+      initial: "lightbox",
+      states: {
+        lightbox: {
+          nodes: [
+            { role: "RootWebArea", name: "Ashley" },
+            ...content,
+            { role: "RootWebArea", name: "" }, // a tracking pixel, not a lightbox
+            { role: "RootWebArea", name: "" },
+            { role: "button", name: "Close Modal", depth: 1 },
+          ],
+        },
+        clear: { nodes: [{ role: "RootWebArea", name: "Ashley" }, ...content] },
+      },
+      transitions: { lightbox: { "button:Close Modal": "clear" } },
+    });
+
+    expect(how(await dismissOverlays(page, noWait))).toEqual([
+      { name: "⟨unnamed overlay⟩", dismissedWith: "Close Modal" },
     ]);
   });
 });

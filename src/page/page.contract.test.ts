@@ -14,6 +14,8 @@ const CONSENT_HTML = `<!doctype html>
     <button style="width:120px;height:44px" onclick="document.getElementById('banner').remove()">Accept all</button>
     <button style="width:120px;height:44px">Read more</button>
   </div>
+  <input type="search" aria-label="Query" autocomplete="off"
+         style="position:absolute;top:300px;width:200px;height:44px">
   <button style="position:absolute;top:200px;width:0;height:0;overflow:hidden;padding:0;border:0">Ghost</button>
 </body></html>`;
 
@@ -27,12 +29,16 @@ const consentFake = () =>
           { role: "dialog", name: "Cookies" },
           { role: "button", name: "Accept all", depth: 1 },
           { role: "button", name: "Read more", depth: 1 },
+          { role: "searchbox", name: "Query" },
           { role: "button", name: "Ghost", box: null },
         ],
       },
       accepted: {
         pageHeight: 3000,
-        nodes: [{ role: "button", name: "Ghost", box: null }],
+        nodes: [
+          { role: "searchbox", name: "Query" },
+          { role: "button", name: "Ghost", box: null },
+        ],
       },
     },
     transitions: { consent: { "button:Accept all": "accepted" } },
@@ -112,6 +118,37 @@ function contract(label: string, makePage: () => Promise<Page>) {
       const shot = await page.screenshot();
       expect(shot).toBeInstanceOf(Uint8Array);
       find(await page.snapshot(), "button", "Accept all");
+    });
+
+    // The negative case — a click that provokes nothing — is deliberately not in the
+    // contract. On a real browser any focusable target fires focusin, so "no response"
+    // depends on Chrome's focus fallback rather than on the Page interface.
+    test("type puts the text into the control", async () => {
+      const query = find(await page.snapshot(), "searchbox", "Query");
+      await page.type(query, "sofa");
+      expect(find(await page.snapshot(), "searchbox", "Query").value).toBe("sofa");
+    });
+
+    // The counterpart that click cannot have: a bare input answers keystrokes with
+    // nothing at all, so "no response" is observable here rather than browser-dependent.
+    test("typing into a control that does not answer reports no response", async () => {
+      const query = find(await page.snapshot(), "searchbox", "Query");
+      const timing = await page.type(query, "sofa");
+      expect(timing.respondedMs).toBeNull();
+      expect(timing.settledMs).toBeNull();
+      expect(timing.respondedWith).toBeNull();
+    });
+
+    test("type on an unrendered node throws, naming it", async () => {
+      const ghost = find(await page.snapshot(), "button", "Ghost");
+      await expect(page.type(ghost, "sofa")).rejects.toThrow(/Ghost/);
+    });
+
+    test("click reports that the page responded, and with what", async () => {
+      const timing = await page.click(find(await page.snapshot(), "button", "Accept all"));
+      expect(timing.respondedMs).not.toBeNull();
+      expect(timing.respondedMs!).toBeGreaterThanOrEqual(0);
+      expect(timing.respondedWith).not.toBeNull();
     });
   });
 }

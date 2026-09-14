@@ -1,6 +1,15 @@
 import { CDP } from "./transport";
 import { launchChrome } from "./chrome";
-import type { Box, Highlight, Layout, MeasuredNode, Node, Page, SnapshotOptions } from "./page";
+import type {
+  Box,
+  Highlight,
+  Layout,
+  MeasuredNode,
+  Node,
+  Page,
+  SnapshotOptions,
+  Timing,
+} from "./page";
 
 export type Viewport = {
   width: number;
@@ -154,7 +163,14 @@ class CdpPage implements Page {
     })`);
   }
 
-  async click(node: Node): Promise<void> {
+  async click(node: Node): Promise<Timing> {
+    await this.#watchResponse();
+    await this.#pressAt(node);
+    return this.#awaitSettled();
+  }
+
+  /** Scrolls the Node into view and clicks its centre. No timing — callers decide what to measure. */
+  async #pressAt(node: Node): Promise<void> {
     const backendNodeId = handleOf(node);
     if (backendNodeId !== undefined) {
       try {
@@ -174,21 +190,77 @@ class CdpPage implements Page {
     const view = await this.layout();
     const x = box.x + box.width / 2 - view.scrollX;
     const y = box.y + box.height / 2 - view.scrollY;
-    await this.#send("Input.dispatchMouseEvent", {
-      type: "mousePressed",
-      x,
-      y,
-      button: "left",
-      clickCount: 1,
-    });
-    await this.#send("Input.dispatchMouseEvent", {
-      type: "mouseReleased",
-      x,
-      y,
-      button: "left",
-      clickCount: 1,
-    });
-    await Bun.sleep(this.#settle.clickMs);
+    for (const type of ["mousePressed", "mouseReleased"] as const) {
+      await this.#send("Input.dispatchMouseEvent", { type, x, y, button: "left", clickCount: 1 });
+    }
+  }
+
+  async type(node: Node, text: string): Promise<Timing> {
+    await this.#pressAt(node); // focus it the way a user would, untimed
+    await this.#watchResponse();
+    for (const ch of text) {
+      await this.#send("Input.dispatchKeyEvent", { type: "keyDown", text: ch, unmodifiedText: ch });
+      await this.#send("Input.dispatchKeyEvent", { type: "keyUp", text: ch });
+      await Bun.sleep(30); // a person types; they don't paste
+    }
+    return this.#awaitSettled();
+  }
+
+  #watchResponse(): Promise<void> {
+    return this.#evaluate(`(() => {
+      window.__uxaOff?.();              // a previous click's watcher, if any
+      const t0 = performance.now();
+      let first = null, kind = null, last = t0;
+      const mark = (k) => {
+        const now = performance.now();
+        if (first === null) { first = now; kind = k; }
+        last = now;
+      };
+      const obs = new MutationObserver(() => mark("mutation"));
+      obs.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+      const onFocus = () => mark("focus");
+      document.addEventListener("focusin", onFocus, true);
+      window.__uxaOff = () => { obs.disconnect(); document.removeEventListener("focusin", onFocus, true); };
+      window.__uxaSettle = () => ({ t0, first, kind, last, now: performance.now() });
+    })()`);
+  }
+  /**
+   * Polls the in-page watcher until the DOM has been quiet for QUIET_MS, capped by
+   * settle.clickMs. A navigation destroys the watcher; that reads as "never settled"
+   * and returns null, which is honest — we can't time what we can't observe.
+   */
+  async #awaitSettled(): Promise<Timing> {
+    const QUIET_MS = 400;
+    const NONE: Timing = { respondedMs: null, settledMs: null, respondedWith: null };
+    const deadline = Date.now() + this.#settle.clickMs;
+    type Sample = {
+      t0: number;
+      first: number | null;
+      kind: "mutation" | "focus" | null;
+      last: number;
+      now: number;
+    };
+    let latest: Sample | null = null;
+
+    while (Date.now() < deadline) {
+      await Bun.sleep(100);
+      latest = await this.#evaluate(`window.__uxaSettle ? window.__uxaSettle() : null`);
+      if (!latest) continue;
+      if (latest.now - latest.last < QUIET_MS) continue;
+      if (latest.first === null) return NONE;
+      return {
+        respondedMs: Math.round(latest.first - latest.t0),
+        settledMs: Math.round(latest.last - latest.t0),
+        respondedWith: latest.kind,
+      };
+    }
+
+    if (latest?.first == null) return NONE;
+    return {
+      respondedMs: Math.round(latest.first - latest.t0),
+      settledMs: null,
+      respondedWith: latest.kind,
+    };
   }
 
   async scrollTo(y: number): Promise<void> {
@@ -257,16 +329,43 @@ class CdpPage implements Page {
     return new Uint8Array(Buffer.from(data, "base64"));
   }
 
+  /** Every frame's accessibility tree, concatenated. `getFullAXTree` covers one frame only. */
   async #walkTree(all: boolean): Promise<Node[]> {
     await this.#send("Accessibility.enable");
-    const { nodes } = await this.#send("Accessibility.getFullAXTree");
 
+    const out: Node[] = [];
+    for (const frameId of await this.#frameIds()) {
+      const { nodes } = await this.#send("Accessibility.getFullAXTree", { frameId });
+      this.#collect(nodes, all, out);
+    }
+    return out;
+  }
+
+  /**
+   * Same-origin frames only. A cross-origin frame is a separate target and is
+   * absent from this tree entirely — its content is never audited.
+   */
+  async #frameIds(): Promise<string[]> {
+    const { frameTree } = await this.#send("Page.getFrameTree");
+    const ids: string[] = [];
+    const walk = (n: any) => {
+      ids.push(n.frame.id);
+      for (const child of n.childFrames ?? []) walk(child);
+    };
+    walk(frameTree);
+    return ids;
+  }
+
+  /**
+   * Appends one frame's perceivable Nodes to `out`. Refs stay sequential across
+   * frames; AX nodeIds are tree-scoped, so the id map is rebuilt per frame.
+   */
+  #collect(nodes: any[], all: boolean, out: Node[]): void {
     const byId = new Map<string, any>(nodes.map((n: any) => [n.nodeId, n]));
     const root = nodes.find((n: any) => !n.parentId) ?? nodes[0];
     const prop = (node: any, name: string) =>
       node.properties?.find((p: any) => p.name === name)?.value?.value;
 
-    const out: Node[] = [];
     const walk = (node: any, depth: number, parentName: string) => {
       const role = node.role?.value ?? "";
       const name = (node.name?.value ?? "").trim();
@@ -297,7 +396,6 @@ class CdpPage implements Page {
     };
 
     if (root) walk(root, 0, "");
-    return out;
   }
 
   /** Null when the Node has no layout box, a zero-size one, or is no longer in the DOM. */

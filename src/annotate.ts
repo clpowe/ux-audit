@@ -18,18 +18,30 @@ const highlightsFor = (findings: GroupedFinding[]): Highlight[] =>
   );
 
 /**
- * Highlights every Finding, then screenshots the Page top to bottom so each Finding
- * with a box lands in one shot. Returns Finding id → screenshot file name.
+ * Writes out any evidence captured earlier, then highlights every Finding and
+ * screenshots the Page top to bottom so each Finding with a box lands in one shot.
+ * Returns Finding id → screenshot file name.
  */
 export async function captureShots(
   page: Page,
   findings: GroupedFinding[],
   dir: string,
 ): Promise<Map<string, string>> {
+  const shots = new Map<string, string>();
+
+  // An overlay was photographed before it was dismissed. Nothing on the page shows
+  // it now, so these bytes are the only record of it and cannot be re-taken here.
+  let captured = 0;
+  for (const f of findings) {
+    if (!f.shot) continue;
+    const file = `overlay-${String(++captured).padStart(2, "0")}.png`;
+    await Bun.write(`${dir}/${file}`, f.shot);
+    shots.set(f.id, file);
+  }
+
   await page.highlight(highlightsFor(findings));
 
   const view = await page.layout();
-  const shots = new Map<string, string>();
   const done = new Set<string>();
 
   const ordered = findings.filter((f) => f.box !== null).sort((a, b) => a.box!.y - b.box!.y);

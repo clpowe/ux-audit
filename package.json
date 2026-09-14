@@ -6,7 +6,8 @@
   "scripts": {
     "peek": "bun run src/peek.ts",
     "measure": "bun run src/measure.ts",
-    "probe": "bun run src/probe.ts"
+    "probe": "bun run src/probe.ts",
+    "calibrate": "bun run src/calibrate.ts"
   },
   "dependencies": {
     "@ai-sdk/openai": "^4.0.66",

@@ -49,7 +49,7 @@ export interface Page {
   layout(): Promise<Layout>;
 
   /** Returns once the Page has settled. Throws, naming the Node, if it is not rendered or no longer on the Page. */
-  click(node: Node): Promise<void>;
+  click(node: Node): Promise<Timing>;
 
   /** Returns once the Page has settled; Highlights move with the content. */
   scrollTo(y: number): Promise<void>;
@@ -62,4 +62,11 @@ export interface Page {
 
   /** PNG bytes of the current viewport, Highlights included. */
   screenshot(): Promise<Uint8Array>;
+  type(node: Node, text: string): Promise<Timing>;
 }
+
+export type Timing = {
+  respondedMs: number | null;
+  settledMs: number | null;
+  respondedWith: "mutation" | "focus" | null;
+};
