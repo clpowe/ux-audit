@@ -13,6 +13,7 @@ type AriaNode = {
 const INTERACTIVE = new Set(["button", "link", "textbox", "searchbox", "combobox", "listbox", "option", "checkbox", "radio", "switch", "slider", "spinbutton", "menuitem", "menuitemcheckbox", "menuitemradio", "tab", "treeitem"]);
 const STRUCTURAL = new Set(["heading", "navigation", "main", "banner", "contentinfo", "complementary", "form", "search", "dialog", "alertdialog", "alert", "status", "list", "table", "region", "tablist", "tabpanel"]);
 const HIGHLIGHTS = "uxa-highlights";
+const TARGET_CLOSED = /Target (?:page, context or browser has been closed|closed|crashed)|(?:page|context|browser) has been closed|page crashed/i;
 
 export async function launchPage(opts: LaunchOptions): Promise<PlaywrightSession> {
   let browser: Browser | undefined;
@@ -27,13 +28,21 @@ export async function launchPage(opts: LaunchOptions): Promise<PlaywrightSession
     });
     context.setDefaultTimeout(1_500);
     const browserPage = await context.newPage();
+    // Preserve the most specific lifecycle event; these events do not establish
+    // why the renderer crashed or the browser disconnected.
+    let closure: { rank: number; reason: string } | undefined;
+    const record = (rank: number, reason: string) => { if (!closure || rank < closure.rank) closure = { rank, reason }; };
+    browserPage.on("crash", () => record(0, "the page crashed"));
+    browser.on("disconnected", () => record(1, "the browser disconnected"));
+    context.on("close", () => record(2, "the browser context was closed"));
+    browserPage.on("close", () => record(3, "the page was closed"));
     const goto = async (url: string) => {
       await browserPage.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
       await browserPage.waitForLoadState("networkidle", { timeout: 2_000 }).catch(() => {});
     };
     await goto(opts.url);
     return {
-      page: new PlaywrightPage(browserPage),
+      page: new PlaywrightPage(browserPage, () => closure?.reason),
       goto,
       close: async () => { await context?.close(); await browser?.close(); },
     };
@@ -45,18 +54,53 @@ export async function launchPage(opts: LaunchOptions): Promise<PlaywrightSession
 }
 
 class PlaywrightPage implements Page {
-  constructor(private readonly browserPage: BrowserPage) {}
+  constructor(private readonly browserPage: BrowserPage, private readonly closure: () => string | undefined = () => undefined) {}
+
+  private closedError(cause?: unknown): Error {
+    return new Error(`the browser session ended mid-audit: ${this.closure() ?? "the page, context, or browser was closed"}`, { cause });
+  }
+
+  /** Turns Playwright's generic target-closed rejection into one that names the cause. */
+  private async guard<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.closure() || this.browserPage.isClosed()) throw this.closedError();
+    let result: T;
+    try {
+      result = await operation();
+    } catch (error) {
+      if (!this.closure() && !this.browserPage.isClosed() && !TARGET_CLOSED.test(String(error))) throw error;
+      throw this.closedError(error);
+    }
+    if (this.closure() || this.browserPage.isClosed()) throw this.closedError();
+    return result;
+  }
 
   snapshot(opts: SnapshotOptions & { boxes: true }): Promise<MeasuredNode[]>;
   snapshot(opts?: SnapshotOptions): Promise<Node[]>;
-  async snapshot(opts: SnapshotOptions = {}): Promise<Node[] | MeasuredNode[]> {
+  snapshot(opts: SnapshotOptions = {}): Promise<Node[] | MeasuredNode[]> {
+    return this.guard(() => this.snapshotFrames(opts));
+  }
+
+  private async snapshotFrames(opts: SnapshotOptions): Promise<Node[] | MeasuredNode[]> {
     const nodes: Node[] = [];
     for (const frame of this.browserPage.frames()) {
-      const body = frame.locator("body");
-      if (!await body.count()) continue;
-      nodes.push({ ref: nodes.length, role: "RootWebArea", name: await frame.title().catch(() => ""), depth: 0, handle: body });
-      const tree = await body.ariaSnapshotJSON({ mode: "ai" }) as AriaNode[];
-      this.collect(frame, tree, nodes, opts.all ?? false, 1);
+      const start = nodes.length;
+      try {
+        const body = frame.locator("body");
+        if (!await body.count()) continue;
+        nodes.push({ ref: nodes.length, role: "RootWebArea", name: await frame.title().catch(() => ""), depth: 0, handle: body });
+        const tree = await body.ariaSnapshotJSON({ mode: "ai" }) as AriaNode[];
+        this.collect(frame, tree, nodes, opts.all ?? false, 1);
+      } catch (error) {
+        if (frame === this.browserPage.mainFrame()) throw error;
+        // Child targets can close before Playwright marks the frame detached.
+        // Discard any partial frame tree, including its root, before continuing.
+        // The outer guard still rejects if the whole session ended.
+        if (frame.isDetached() || TARGET_CLOSED.test(String(error))) {
+          nodes.length = start;
+          continue;
+        }
+        throw error;
+      }
     }
     if (!opts.boxes) return nodes;
     const view = await this.layout();
@@ -86,21 +130,23 @@ class PlaywrightPage implements Page {
   }
 
   layout(): Promise<Layout> {
-    return this.browserPage.evaluate(() => ({ scrollX, scrollY, width: innerWidth, height: innerHeight, pageHeight: document.documentElement.scrollHeight }));
+    return this.guard(() => this.browserPage.evaluate(() => ({ scrollX, scrollY, width: innerWidth, height: innerHeight, pageHeight: document.documentElement.scrollHeight })));
   }
 
-  async isPresent(node: Node): Promise<boolean> {
-    const locator = locatorOf(node);
-    try {
-      return await locator.count() > 0 && locator.isVisible();
-    } catch (error) {
-      if (/frame.*detached|frame was detached/i.test(String(error))) return false;
-      throw error;
-    }
+  isPresent(node: Node): Promise<boolean> {
+    return this.guard(async () => {
+      const locator = locatorOf(node);
+      try {
+        return await locator.count() > 0 && await locator.isVisible();
+      } catch (error) {
+        if (/frame.*detached|frame was detached/i.test(String(error))) return false;
+        throw error;
+      }
+    });
   }
 
-  click(node: Node): Promise<Timing> { return this.act("click", node, (locator) => locator.click()); }
-  type(node: Node, text: string): Promise<Timing> { return this.act("type into", node, (locator) => locator.fill(text)); }
+  click(node: Node): Promise<Timing> { return this.guard(() => this.act("click", node, (locator) => locator.click())); }
+  type(node: Node, text: string): Promise<Timing> { return this.guard(() => this.act("type into", node, (locator) => locator.fill(text))); }
 
   private async act(verb: string, node: Node, action: (locator: Locator) => Promise<void>): Promise<Timing> {
     const start = performance.now();
@@ -112,43 +158,52 @@ class PlaywrightPage implements Page {
       await this.browserPage.waitForLoadState("domcontentloaded", { timeout: 1_000 }).catch(() => {});
       return { respondedMs: elapsed, settledMs: elapsed, respondedWith: "mutation" };
     } catch (error) {
+      // A gone browser must not be reported as a gone element: the journey
+      // retries past a missing element, but there is nothing left to retry on.
+      if (TARGET_CLOSED.test(String(error)) || this.closure() || this.browserPage.isClosed()) throw error;
       const absent = !await locator.count().catch(() => 0) || !await locator.isVisible().catch(() => false);
       throw new Error(`cannot ${verb} ${node.role} "${node.name}" — ${absent ? "not rendered or no longer on the page" : String(error)}`);
     }
   }
 
-  async scrollTo(y: number): Promise<void> {
-    await this.browserPage.evaluate((top) => scrollTo(0, top), y);
-    await this.browserPage.waitForTimeout(100);
-  }
-
-  async prime(): Promise<void> {
-    await this.browserPage.evaluate(async () => {
-      for (let y = 0; y < document.documentElement.scrollHeight; y += innerHeight) {
-        scrollTo(0, y);
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-      scrollTo(0, 0);
+  scrollTo(y: number): Promise<void> {
+    return this.guard(async () => {
+      await this.browserPage.evaluate((top) => scrollTo(0, top), y);
+      await this.browserPage.waitForTimeout(100);
     });
   }
 
-  async highlight(highlights: Highlight[]): Promise<void> {
-    await this.browserPage.evaluate(({ id, highlights }) => {
-      document.getElementById(id)?.remove();
-      const root = document.createElement("div");
-      root.id = id;
-      root.style.cssText = "position:absolute;inset:0;z-index:2147483647;pointer-events:none";
-      for (const mark of highlights) {
-        const item = document.createElement("div");
-        item.textContent = mark.label;
-        item.style.cssText = `position:absolute;left:${mark.box.x}px;top:${mark.box.y}px;width:${mark.box.width}px;height:${mark.box.height}px;outline:2px solid ${mark.color};color:white;background:${mark.color};font:700 11px monospace`;
-        root.appendChild(item);
-      }
-      document.body.appendChild(root);
-    }, { id: HIGHLIGHTS, highlights });
+  prime(): Promise<void> {
+    return this.guard(async () => {
+      await this.browserPage.evaluate(async () => {
+        for (let y = 0; y < document.documentElement.scrollHeight; y += innerHeight) {
+          scrollTo(0, y);
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        scrollTo(0, 0);
+      });
+    });
   }
 
-  async screenshot(): Promise<Uint8Array> { return new Uint8Array(await this.browserPage.screenshot({ type: "png" })); }
+  highlight(highlights: Highlight[]): Promise<void> {
+    return this.guard(async () => {
+      await this.browserPage.evaluate(({ id, highlights }) => {
+        document.getElementById(id)?.remove();
+        const root = document.createElement("div");
+        root.id = id;
+        root.style.cssText = "position:absolute;inset:0;z-index:2147483647;pointer-events:none";
+        for (const mark of highlights) {
+          const item = document.createElement("div");
+          item.textContent = mark.label;
+          item.style.cssText = `position:absolute;left:${mark.box.x}px;top:${mark.box.y}px;width:${mark.box.width}px;height:${mark.box.height}px;outline:2px solid ${mark.color};color:white;background:${mark.color};font:700 11px monospace`;
+          root.appendChild(item);
+        }
+        document.body.appendChild(root);
+      }, { id: HIGHLIGHTS, highlights });
+    });
+  }
+
+  screenshot(): Promise<Uint8Array> { return this.guard(async () => new Uint8Array(await this.browserPage.screenshot({ type: "png" }))); }
 }
 
 function locatorOf(node: Node): Locator {

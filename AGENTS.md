@@ -50,6 +50,7 @@ This file gives coding agents project-specific context. Keep it short and update
 
 ## Agent Rules
 
+- For new work, use `main` in the primary checkout. If a session starts in a worktree, direct project commands and edits to the primary checkout; use an isolated branch or worktree only when explicitly requested.
 - For project coding work, read and apply [architectural-code-partner](.agents/skills/architectural-code-partner/SKILL.md). It defines Full/Quick modes, human-owned implementation exercises, and use of the existing design journal and learning log. Honor explicit task overrides and previously settled decisions.
 - Do not edit:
 - Always ask before:

@@ -4,12 +4,23 @@
 
 | Module | Last studied | Status |
 |---|---|---|
+| Page / browser lifecycle | 2026-09-14 | Assistant implementation verified with controlled browser; live Ashley and independent learning checks deferred; review 2026-09-28 |
 | Shopping journey | 2026-09-14 | Assistant implementation verified with controlled browser; live model and independent learning checks deferred; review 2026-09-28 |
 | Overlay / Page presence | 2026-09-14 | Assisted implementation verified; independent extension deferred; review 2026-09-28 |
 | Findings / evidence | 2026-09-14 | Auto implementation verified; learning check deferred; review 2026-09-28 |
 | Model judgments / calibration | 2026-09-14 | Auto implementation verified without live API call; learning check deferred; review 2026-09-28 |
 
 ## Task entries
+
+### 2026-09-14 — Finish browser target recovery
+- baseline / scope: HEAD `72617b9` plus the unfinished `src/page/playwright.ts` lifecycle patch. The user requested "finish this"; the existing MVP "just write it" override remains active.
+- mode: Full, assistant-owned implementation. User predictions, authored design rationale, and independent exercises remain deferred. The Page interface and journey stopping policy are unchanged.
+- evidence: Ashley report `2026-09-15T02-07-24-061Z-98b284d3` records the cookie-close click as executed, followed by `count: Target page, context or browser has been closed` before a second step. It does not identify which target closed or why. The report came from the clean `/Users/christopherpowe/Documents/ux-audit` main checkout; this fix is in the Traycer worktree.
+- behavior: skip only failed child frames that detached or report a closed target, discarding their partial snapshot content. Main-frame failures still throw. Observed page/context/browser lifecycle events reject all Page operations before or after work, including presence checks and geometry collection. Diagnostics preserve the original error as a cause and report observed events without guessing an out-of-memory condition or user action. Presence awaits the visibility promise so detached-frame errors are caught.
+- actual files: implementation in `src/page/playwright.ts`, eight regressions in new `src/page/playwright.test.ts`, and this log. No new dependency or public interface was introduced.
+- observations: five of the eight regressions failed against the unfinished patch; all eight passed after correction. Controlled Chromium checks cover detachment after cookie dismissal, delayed child-target closure, main-target failure, unrelated inspection failure, visibility detachment, all Page operations after shutdown, a simulated crash event, and preservation of an executed journey step when the browser subsequently closes.
+- verification: full suite passed 125 tests across 12 files. After removing a redundant inner lifecycle check already enforced by the outer guard, the eight affected browser regressions were rerun. `bunx tsc --noEmit`, `git diff --check`, and `fallow audit --format json --quiet` pass. Fallow reports one inherited `collect` complexity finding and no introduced findings.
+- limits / deferred check: no live Ashley or paid model rerun; actual cause of the historical target closure remains unknown. Explain why a missing child frame may be skipped while a closed browser must produce an operational error, and why completed click evidence remains in the report. Independent understanding is not demonstrated; review 2026-09-28.
 
 ### 2026-09-14 — Replace custom Chrome/CDP with Playwright
 - request: completely remove custom Chrome/CDP browser control and replace it with Playwright to reduce code.
